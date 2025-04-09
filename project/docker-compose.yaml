@@ -1,0 +1,15 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: server
+    ports:
+      - "5000:5000"
+
+  generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.generator
+    depends_on:
+      - server

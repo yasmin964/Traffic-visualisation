@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Traffic Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        #globe-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            max-width: 300px;
+            z-index: 10;
+        }
+        #stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            max-width: 300px;
+            z-index: 10;
+        }
+        .point-info {
+            position: absolute;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+            display: none;
+            z-index: 100;
+        }
+        h3 {
+            margin-top: 0;
+        }
+        .suspicious {
+            color: #ff5555;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+<div id="container">
+    <div id="globe-container"></div>
+    <div id="controls">
+        <h3>Controls</h3>
+        <div>
+            <label>
+                <input type="checkbox" id="show-suspicious" checked>
+                Show suspicious traffic
+            </label>
+        </div>
+        <div>
+            <label>
+                <input type="checkbox" id="show-normal" checked>
+                Show normal traffic
+            </label>
+        </div>
+        <div>
+            <label>
+                Point duration: <input type="range" id="point-duration" min="5" max="30" value="10">
+                <span id="duration-value">10</span> seconds
+            </label>
+        </div>
+        <div>
+            <button id="reset-view">Reset View</button>
+        </div>
+    </div>
+    <div id="stats">
+        <h3>Traffic Statistics</h3>
+        <div>Total packets: <span id="total-count">0</span></div>
+        <div>Suspicious packets: <span id="suspicious-count">0</span></div>
+        <div>Current connections: <span id="connection-count">0</span></div>
+        <h4>Top Locations</h4>
+        <ul id="top-locations"></ul>
+    </div>
+    <div class="point-info" id="point-info"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/globe.gl@2.24.0/dist/globe.gl.min.js"></script>
+<script>
+    // Initialize variables
+    const trafficData = [];
+    const locationCounts = {};
+    let totalPackets = 0;
+    let suspiciousPackets = 0;
+    let activeConnections = 0;
+
+    // DOM elements
+    const totalCountEl = document.getElementById('total-count');
+    const suspiciousCountEl = document.getElementById('suspicious-count');
+    const connectionCountEl = document.getElementById('connection-count');
+    const topLocationsEl = document.getElementById('top-locations');
+    const pointInfoEl = document.getElementById('point-info');
+    const pointDurationSlider = document.getElementById('point-duration');
+    const durationValueEl = document.getElementById('duration-value');
+    const showSuspiciousCheckbox = document.getElementById('show-suspicious');
+    const showNormalCheckbox = document.getElementById('show-normal');
+    const resetViewBtn = document.getElementById('reset-view');
+
+    // Update duration display
+    pointDurationSlider.addEventListener('input', function() {
+        durationValueEl.textContent = this.value;
+    });
+
+    // Initialize Globe
+    const globe = Globe()
+        .globeImageUrl('//unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+        .bumpImageUrl('//unpkg.com/three-globe/example/img/earth-topology.png')
+        .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
+        .showAtmosphere(true)
+        .atmosphereColor('rgba(100, 150, 255, 0.2)')
+        .atmosphereAltitude(0.25)
+        .pointAltitude(0.01)  // Добавлено для лучшей видимости точек
+        .pointRadius(0.5)      // Размер точек
+        .width(window.innerWidth)
+        .height(window.innerHeight)
+        (document.getElementById('globe-container'));
+
+    // Set initial camera position
+    globe.camera().position.z = 300;
+
+    // Reset view button
+    resetViewBtn.addEventListener('click', () => {
+        globe.camera().position.x = 0;
+        globe.camera().position.y = 0;
+        globe.camera().position.z = 300;
+        globe.camera().lookAt(0, 0, 0);
+    });
+
+    // Socket.io connection
+    const socket = io('http://localhost:5000', {
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000
+    });
+
+    socket.on('connect', () => {
+        console.log('Connected to server');
+        activeConnections = 1;
+        connectionCountEl.textContent = activeConnections;
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Disconnected from server');
+        activeConnections = 0;
+        connectionCountEl.textContent = activeConnections;
+    });
+
+    socket.on('connect_error', (err) => {
+        console.error('Connection error:', err);
+    });
+
+    socket.on('new_traffic', (data) => {
+        console.log("Received traffic data:", data);
+
+        if (!data || !data.data) {
+            console.error("Invalid data format:", data);
+            return;
+        }
+
+        const packet = data.data;
+        totalPackets++;
+        if (packet.suspicious > 0) suspiciousPackets++;
+
+        const locationKey = `${packet.latitude.toFixed(2)},${packet.longitude.toFixed(2)}`;
+        locationCounts[locationKey] = (locationCounts[locationKey] || 0) + 1;
+
+        trafficData.push({
+            ...packet,
+            arrivalTime: Date.now(),
+            locationKey
+        });
+
+        updateStats();
+
+        if ((packet.suspicious > 0 && showSuspiciousCheckbox.checked) ||
+            (packet.suspicious === 0 && showNormalCheckbox.checked)) {
+            addPoint(packet);
+        }
+    });
+
+    socket.on('stats_update', (stats) => {
+        activeConnections = stats.active_connections || 0;
+        connectionCountEl.textContent = activeConnections;
+    });
+
+    // Function to add a point to the globe
+    function addPoint(data) {
+        console.log("Adding point:", data);
+
+        const color = data.suspicious > 0 ? '#ff5555' : '#55ff55';
+        const size = data.suspicious > 0 ? 0.5 : 0.3;
+
+        const point = {
+            lat: data.latitude,
+            lng: data.longitude,
+            size: size,
+            color: color,
+            altitude: 0.01,
+            ip: data.ip_address,
+            suspicious: data.suspicious,
+            timestamp: new Date(data.timestamp * 1000).toLocaleString()
+        };
+
+        // Add point to globe
+        const currentPoints = globe.pointsData() || [];
+        globe.pointsData([...currentPoints, point]);
+
+        // Remove point after duration
+        const duration = parseInt(pointDurationSlider.value) * 1000;
+        setTimeout(() => {
+            const updatedPoints = globe.pointsData().filter(p =>
+                !(p.lat === point.lat && p.lng === point.lng));
+            globe.pointsData(updatedPoints);
+        }, duration);
+
+        // Add click handler
+        setTimeout(() => {
+            const obj = globe.scene().children.find(child =>
+                child.userData &&
+                child.userData.lat === point.lat &&
+                child.userData.lng === point.lng);
+
+            if (obj) {
+                obj.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    showPointInfo(point, event.clientX, event.clientY);
+                });
+            }
+        }, 100);
+    }
+
+    // Function to show point info
+    function showPointInfo(point, x, y) {
+        pointInfoEl.innerHTML = `
+            <div><strong>IP:</strong> ${point.ip}</div>
+            <div><strong>Location:</strong> ${point.lat.toFixed(4)}, ${point.lng.toFixed(4)}</div>
+            <div><strong>Time:</strong> ${point.timestamp}</div>
+            <div class="${point.suspicious > 0 ? 'suspicious' : ''}">
+                <strong>Status:</strong> ${point.suspicious > 0 ? 'SUSPICIOUS' : 'Normal'}
+            </div>
+        `;
+        pointInfoEl.style.display = 'block';
+        pointInfoEl.style.left = `${x + 10}px`;
+        pointInfoEl.style.top = `${y + 10}px`;
+
+        // Hide after 5 seconds
+        setTimeout(() => {
+            pointInfoEl.style.display = 'none';
+        }, 5000);
+    }
+
+    // Hide point info when clicking elsewhere
+    document.addEventListener('click', (e) => {
+        if (e.target.id !== 'globe-container' && !e.target.closest('.point')) {
+            pointInfoEl.style.display = 'none';
+        }
+    });
+
+    // Update statistics display
+    function updateStats() {
+        totalCountEl.textContent = totalPackets;
+        suspiciousCountEl.textContent = suspiciousPackets;
+
+        // Update top locations
+        const topLocations = Object.entries(locationCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+
+        topLocationsEl.innerHTML = topLocations.map(([loc, count]) =>
+            `<li>${loc} (${count} packets)</li>`).join('');
+    }
+
+    // Handle filter changes
+    showSuspiciousCheckbox.addEventListener('change', updatePointsDisplay);
+    showNormalCheckbox.addEventListener('change', updatePointsDisplay);
+
+    function updatePointsDisplay() {
+        const showSuspicious = showSuspiciousCheckbox.checked;
+        const showNormal = showNormalCheckbox.checked;
+        const duration = parseInt(pointDurationSlider.value) * 1000;
+        const now = Date.now();
+
+        // Filter points based on current time and visibility duration
+        const visiblePoints = trafficData.filter(data =>
+            (now - data.arrivalTime) < duration);
+
+        // Filter based on current checkbox settings
+        const pointsToShow = visiblePoints.filter(data =>
+            (data.suspicious > 0 && showSuspicious) ||
+            (data.suspicious === 0 && showNormal));
+
+        // Convert to globe points format
+        const globePoints = pointsToShow.map(data => ({
+            lat: data.latitude,
+            lng: data.longitude,
+            size: data.suspicious > 0 ? 0.5 : 0.3,
+            color: data.suspicious > 0 ? '#ff5555' : '#55ff55',
+            altitude: 0.01,
+            ip: data.ip_address,
+            suspicious: data.suspicious,
+            timestamp: new Date(data.timestamp * 1000).toLocaleString()
+        }));
+
+        // Update globe
+        globe.pointsData(globePoints);
+    }
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+        globe.width(window.innerWidth)
+            .height(window.innerHeight);
+    });
+
+    // Initial stats update
+    updateStats();
+
+    // Add test point after 2 seconds (for debugging)
+    setTimeout(() => {
+        addPoint({
+            latitude: 55.75,
+            longitude: 37.61,
+            ip_address: '8.8.8.8',
+            suspicious: 1,
+            timestamp: Math.floor(Date.now() / 1000)
+        });
+    }, 2000);
+</script>
+</body>
+</html>

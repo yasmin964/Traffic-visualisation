@@ -1,0 +1,5 @@
+flask
+requests
+flask_socketio
+eventlet
+flask_cors
