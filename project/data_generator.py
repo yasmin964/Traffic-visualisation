@@ -19,35 +19,34 @@ def process_csv(file_path):
     try:
         with open(file_path, 'r') as file:
             reader = csv.DictReader(file)
-            rows = list(reader)
-    except Exception as e:
-        print(f"❌ Failed to open file: {e}")
-        return
+            rows = sorted(list(reader), key=lambda x: float(x['Timestamp']))
 
-    if not rows:
-        print("⚠️ File is empty.")
-        return
+        if not rows:
+            print("⚠️ File is empty.")
+            return
 
-    print(f"🚀 Sending {len(rows)} packages...")
+        print(f"🚀 Sending {len(rows)} packages...")
+        start_time = time.time()
+        base_timestamp = float(rows[0]['Timestamp'])
 
-    for i, row in enumerate(rows):
-        try:
+        for i, row in enumerate(rows):
+            current_timestamp = float(row['Timestamp'])
+            delay = current_timestamp - base_timestamp
+            time.sleep(delay)
+
             package = {
                 'ip_address': row['ip address'],
                 'latitude': float(row['Latitude']),
                 'longitude': float(row['Longitude']),
-                'timestamp': int(row['Timestamp']),
-                'suspicious': float(row['suspicious'])
+                'timestamp': int(current_timestamp),
+                'suspicious': int(float(row['suspicious']))
             }
-        except Exception as e:
-            print(f"❌ Row {i} skipped: {e}")
-            continue
 
-        sent = send_package(package)
-        if not sent:
-            print(f"⚠️ Failed to send row {i}")
+            send_package(package)
+            base_timestamp = current_timestamp
 
-        time.sleep(0.2)
+    except Exception as e:
+        print(f"❌ Error: {e}")
 if __name__ == "__main__":
     try:
         process_csv('ip_addresses.csv')
